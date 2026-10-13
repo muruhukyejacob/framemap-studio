@@ -5,6 +5,7 @@ use crate::geom::{self, EdgeGeom, HandleKind};
 use crate::model::*;
 use crate::scene::{self, Prim, SceneOpts, LINE_H};
 use crate::templates;
+use crate::update;
 use eframe::egui::{
     self, color_picker, Align2, Color32, CornerRadius, CursorIcon, FontFamily, FontId, Key, Modifiers, Pos2, Rect, Sense,
     Shape as EShape, Stroke, StrokeKind, Vec2,
@@ -27,13 +28,50 @@ fn from_c32(c: Color32) -> Rgba {
 enum Tool {
     Select,
     Connect,
+    /// Draw a free-standing arrow anywhere on the canvas.
+    Arrow,
     Place(Shape),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum CtxTarget {
+    Canvas(P),
+    Node(u64),
+    Edge(u64),
+    Bend(u64, usize),
+}
+
+/// Snap `p` so the segment from `origin` is horizontal, vertical or at 45°.
+fn snap_angle(origin: P, p: P) -> P {
+    let d = p.sub(origin);
+    let k = std::f32::consts::FRAC_1_SQRT_2;
+    let dirs = [
+        P::new(1.0, 0.0),
+        P::new(-1.0, 0.0),
+        P::new(0.0, 1.0),
+        P::new(0.0, -1.0),
+        P::new(k, k),
+        P::new(-k, k),
+        P::new(k, -k),
+        P::new(-k, -k),
+    ];
+    let best = dirs.iter().copied().max_by(|a, b| d.dot(*a).partial_cmp(&d.dot(*b)).unwrap()).unwrap();
+    let r = origin.add(best.mul(d.dot(best)));
+    // make axis-aligned results exact
+    if best.x == 0.0 {
+        P::new(origin.x, r.y)
+    } else if best.y == 0.0 {
+        P::new(r.x, origin.y)
+    } else {
+        r
+    }
 }
 
 #[derive(Clone)]
 enum Drag {
     None,
-    Move { start: P, orig: Vec<(u64, P)>, edge_orig: Vec<(u64, Vec<P>, Option<f32>)>, moved: bool },
+    Move { start: P, orig: Vec<(u64, P)>, edge_orig: Vec<(Edge, bool)>, moved: bool, prepared: bool },
+    Draw { start: P, from: Option<u64>, cur: P },
     Resize { id: u64, handle: usize, orig: Node, start: P },
     Connect { from: u64, cur: P },
     Marquee { start: P, cur: P, additive: bool },
@@ -97,6 +135,13 @@ pub struct App {
     canvas_rect: Rect,
     geoms: Vec<EdgeGeom>,
     crossing_count: usize,
+    sel_bend: Option<(u64, usize)>,
+    ctx_target: CtxTarget,
+    move_step: f32,
+    update: std::sync::Arc<std::sync::Mutex<update::State>>,
+    update_dialog: bool,
+    update_banner_closed: bool,
+    show_update_help: bool,
 }
 
 impl App {
@@ -155,6 +200,13 @@ impl App {
             canvas_rect: Rect::NOTHING,
             geoms: vec![],
             crossing_count: 0,
+            sel_bend: None,
+            ctx_target: CtxTarget::Canvas(P::new(0.0, 0.0)),
+            move_step: 20.0,
+            update: update::check_in_background(cc.egui_ctx.clone()),
+            update_dialog: false,
+            update_banner_closed: false,
+            show_update_help: false,
         };
         if let Some(p) = open {
             app.open_path(p);
@@ -278,6 +330,20 @@ impl App {
     fn connect(&mut self, from: u64, to: u64) -> u64 {
         self.label("Connect");
         let id = self.doc.add_edge(from, to);
+        self.apply_defaults(id);
+        let route = self.defaults.route;
+        if route == Route::Curved {
+            // give new curved connectors a gentle bend that the user can drag
+            if let (Some(a), Some(b)) = (self.doc.node(from), self.doc.node(to)) {
+                let (ca, cb) = (a.center(), b.center());
+                let mid = ca.lerp(cb, 0.5).add(cb.sub(ca).perp().mul(0.18));
+                self.doc.edge_mut(id).unwrap().bends = vec![mid];
+            }
+        }
+        id
+    }
+
+    fn apply_defaults(&mut self, id: u64) {
         let d = &self.defaults;
         let (route, start, end, color, width, dash) = (d.route, d.start, d.end, d.color, d.width, d.dash);
         if let Some(e) = self.doc.edge_mut(id) {
@@ -287,16 +353,7 @@ impl App {
             e.color = color;
             e.width = width;
             e.dash = dash;
-            if route == Route::Curved {
-                // give new curved connectors a gentle bend that the user can drag
-                if let (Some(a), Some(b)) = (self.doc.node(from), self.doc.node(to)) {
-                    let (ca, cb) = (a.center(), b.center());
-                    let mid = ca.lerp(cb, 0.5).add(cb.sub(ca).perp().mul(0.18));
-                    self.doc.edge_mut(id).unwrap().bends = vec![mid];
-                }
-            }
         }
-        id
     }
 
     fn delete_selection(&mut self) {
@@ -499,6 +556,366 @@ impl App {
         } else {
             format!("Crossings reduced from {b} to {a}; the remaining ones are drawn with hops. Move shapes apart to remove more.")
         };
+    }
+
+    // ------------------------------------------------------- connector tools
+
+    fn edge(&self, id: u64) -> Option<&Edge> {
+        self.doc.edges.iter().find(|e| e.id == id)
+    }
+
+    fn elbow_flag(&self, id: u64) -> bool {
+        self.geoms.iter().find(|g| g.id == id).map(|g| g.elbow_vertical).unwrap_or(false)
+    }
+
+    /// Connectors whose both ends sit on shapes that are being moved.
+    fn is_internal(&self, e: &Edge) -> bool {
+        e.from_pt.is_none() && e.to_pt.is_none() && self.sel_n.contains(&e.from) && self.sel_n.contains(&e.to)
+    }
+
+    /// Give a connector something it can move: a line attached to shapes gets two
+    /// bend points (so it can be pulled anywhere), an elbow gets a fixed middle.
+    fn prepare_edge_for_move(&mut self, id: u64) {
+        let Some(e) = self.edge(id).cloned() else { return };
+        let Some(g) = geom::route_edge(&self.doc, &e) else { return };
+        let attached = e.from_pt.is_none() || e.to_pt.is_none();
+        if !attached {
+            return;
+        }
+        let t = self.doc.edge_mut(id).unwrap();
+        match e.route {
+            Route::Elbow => {
+                if e.elbow_mid.is_none() {
+                    if let Some((_, hp)) = g.handles.iter().find(|(k, _)| *k == HandleKind::ElbowMid) {
+                        t.elbow_vertical = Some(g.elbow_vertical);
+                        t.elbow_mid = Some(if g.elbow_vertical { hp.y } else { hp.x });
+                    }
+                }
+            }
+            _ => {
+                if e.bends.is_empty() {
+                    let l = geom::polyline_len(&g.pts);
+                    t.bends = vec![geom::point_at(&g.pts, l / 3.0).0, geom::point_at(&g.pts, 2.0 * l / 3.0).0];
+                    t.lock = None;
+                }
+            }
+        }
+    }
+
+    /// Snapshot of every connector that moves with the current selection.
+    fn prepare_move_edges(&mut self) -> Vec<(Edge, bool)> {
+        let ids: Vec<u64> = self.doc.edges.iter().filter(|e| self.sel_e.contains(&e.id) || self.is_internal(e)).map(|e| e.id).collect();
+        for id in &ids {
+            let internal = self.edge(*id).map(|e| self.is_internal(e)).unwrap_or(true);
+            if !internal {
+                self.prepare_edge_for_move(*id);
+            }
+        }
+        // refresh routing so elbow flags match the prepared edges
+        self.geoms = geom::route_all(&self.doc);
+        ids.iter().filter_map(|id| self.edge(*id).cloned()).map(|e| {
+            let v = self.elbow_flag(e.id);
+            (e, v)
+        }).collect()
+    }
+
+    fn start_move(&mut self, wp: P) {
+        let orig = self.sel_n.iter().filter_map(|id| self.doc.node(*id).map(|nd| (*id, nd.pos))).collect();
+        self.drag = Drag::Move { start: wp, orig, edge_orig: vec![], moved: false, prepared: false };
+        self.label(if self.sel_n.is_empty() { "Move connector" } else { "Move" });
+    }
+
+    /// Move the selected shapes and connectors by `d` (arrow keys / panel buttons).
+    fn nudge_selection(&mut self, d: P) {
+        if self.sel_n.is_empty() && self.sel_e.is_empty() {
+            return;
+        }
+        self.pending_label.get_or_insert_with(|| "Move".into());
+        for (e, v) in self.prepare_move_edges() {
+            let mut e = e;
+            e.translate(d, v);
+            if let Some(t) = self.doc.edge_mut(e.id) {
+                *t = e;
+            }
+        }
+        for id in self.sel_n.clone() {
+            if let Some(n) = self.doc.node_mut(id) {
+                n.pos = n.pos.add(d);
+            }
+        }
+    }
+
+    fn remove_bend(&mut self, eid: u64, i: usize) {
+        if let Some(e) = self.doc.edge_mut(eid) {
+            if i < e.bends.len() {
+                e.bends.remove(i);
+                self.label("Remove bend");
+                self.status = "Bend removed".into();
+            }
+        }
+        self.sel_bend = None;
+    }
+
+    fn remove_all_bends(&mut self) {
+        let ids: Vec<u64> = self.sel_e.iter().copied().collect();
+        if ids.is_empty() {
+            self.status = "Select a connector first".into();
+            return;
+        }
+        self.label("Remove all bends");
+        for id in ids {
+            if let Some(e) = self.doc.edge_mut(id) {
+                e.bends.clear();
+                e.elbow_mid = None;
+                e.elbow_vertical = None;
+                if e.route == Route::Elbow {
+                    e.route = Route::Straight;
+                }
+            }
+        }
+        self.sel_bend = None;
+        self.status = "All bends removed — the line now runs straight".into();
+    }
+
+    /// Move shapes (and connectors that run between them) by `d`.
+    fn move_nodes_by(&mut self, ids: &[u64], d: P) {
+        for id in ids {
+            if let Some(n) = self.doc.node_mut(*id) {
+                n.pos = n.pos.add(d);
+            }
+        }
+        let geoms = geom::route_all(&self.doc);
+        for e in &mut self.doc.edges {
+            if e.from_pt.is_none() && e.to_pt.is_none() && ids.contains(&e.from) && ids.contains(&e.to) {
+                let v = geoms.iter().find(|g| g.id == e.id).map(|g| g.elbow_vertical).unwrap_or(false);
+                e.translate(d, v);
+            }
+        }
+    }
+
+    /// Make one connector exactly horizontal (or vertical). Returns a note for the status bar.
+    fn axis_edge(&mut self, id: u64, vertical: bool) -> Option<String> {
+        let e = self.edge(id)?.clone();
+        let axis = if vertical { Axis::Vertical } else { Axis::Horizontal };
+        {
+            let t = self.doc.edge_mut(id)?;
+            t.bends.clear();
+            t.elbow_mid = None;
+            t.elbow_vertical = None;
+            t.route = Route::Straight;
+            t.lock = Some(axis);
+        }
+        let across = |p: P| if vertical { p.x } else { p.y };
+        let set_across = |p: P, v: f32| if vertical { P::new(v, p.y) } else { P::new(p.x, v) };
+        match (e.from_pt, e.to_pt) {
+            (Some(p), Some(q)) => {
+                // keep the arrow's length; turn it to the chosen direction
+                let d = q.sub(p);
+                let len = d.len().max(20.0);
+                let along = if vertical { d.y } else { d.x };
+                let sign = if along < 0.0 { -1.0 } else { 1.0 };
+                let nq = if vertical { P::new(p.x, p.y + sign * len) } else { P::new(p.x + sign * len, p.y) };
+                self.doc.edge_mut(id)?.to_pt = Some(nq);
+            }
+            (Some(p), None) => {
+                let c = self.doc.node(e.to)?.center();
+                self.doc.edge_mut(id)?.from_pt = Some(set_across(p, across(c)));
+            }
+            (None, Some(q)) => {
+                let c = self.doc.node(e.from)?.center();
+                self.doc.edge_mut(id)?.to_pt = Some(set_across(q, across(c)));
+            }
+            (None, None) => {
+                let (a, b) = (self.doc.node(e.from)?.clone(), self.doc.node(e.to)?.clone());
+                if geom::locked_ends(geom::End::Node(&a), geom::End::Node(&b), vertical).is_none() {
+                    // the shapes don't line up: move the end shape (with its group) into line
+                    let members = self.doc.group_members(b.id);
+                    if members.contains(&a.id) {
+                        return Some("The two shapes are in the same group, so they can't be lined up. Ungroup them first.".into());
+                    }
+                    let delta = across(a.center()) - across(b.center());
+                    let d = if vertical { P::new(delta, 0.0) } else { P::new(0.0, delta) };
+                    self.move_nodes_by(&members, d);
+                    let name = b.text.lines().next().unwrap_or("").trim().to_string();
+                    return Some(format!(
+                        "Moved {} {:.0} px so the line can be {}.",
+                        if name.is_empty() { "the end shape".to_string() } else { format!("\"{name}\"") },
+                        delta.abs(),
+                        if vertical { "vertical" } else { "horizontal" }
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    fn make_axis(&mut self, vertical: bool) {
+        let ids: Vec<u64> = self.sel_e.iter().copied().collect();
+        if ids.is_empty() {
+            self.status = "Select a connector first (click the line)".into();
+            return;
+        }
+        self.label(if vertical { "Make vertical" } else { "Make horizontal" });
+        let mut notes = vec![];
+        for id in ids {
+            if let Some(n) = self.axis_edge(id, vertical) {
+                notes.push(n);
+            }
+        }
+        self.sel_bend = None;
+        self.status = if notes.is_empty() {
+            format!("Line is now {} and stays that way when you move the shapes (as long as they overlap)", if vertical { "vertical" } else { "horizontal" })
+        } else {
+            notes.join(" ")
+        };
+    }
+
+    /// Turn every slanted segment into a horizontal or vertical one.
+    fn snap_right_angles(&mut self) {
+        let ids: Vec<u64> = self.sel_e.iter().copied().collect();
+        if ids.is_empty() {
+            self.status = "Select a connector first (click the line)".into();
+            return;
+        }
+        self.label("Snap to right angles");
+        for id in ids {
+            let Some(e) = self.edge(id).cloned() else { continue };
+            let Some((a, b)) = geom::edge_ends(&self.doc, &e) else { continue };
+            let (start, end) = (a.center(), b.center());
+            if e.route == Route::Elbow {
+                continue; // already right-angled
+            }
+            if e.bends.is_empty() {
+                let d = end.sub(start);
+                let vertical = d.y.abs() > d.x.abs();
+                self.axis_edge(id, vertical);
+                continue;
+            }
+            let mut bends = e.bends.clone();
+            let n = bends.len();
+            let mut prev = start;
+            for i in 0..n {
+                let b = bends[i];
+                bends[i] = if i == n - 1 {
+                    let c1 = P::new(end.x, prev.y);
+                    let c2 = P::new(prev.x, end.y);
+                    if c1.dist(b) <= c2.dist(b) { c1 } else { c2 }
+                } else if (b.x - prev.x).abs() >= (b.y - prev.y).abs() {
+                    P::new(b.x, prev.y)
+                } else {
+                    P::new(prev.x, b.y)
+                };
+                prev = bends[i];
+            }
+            if let Some(t) = self.doc.edge_mut(id) {
+                t.bends = bends;
+                t.route = Route::Straight;
+                t.lock = None;
+            }
+        }
+        self.status = "Every segment is now horizontal or vertical".into();
+    }
+
+    fn reverse_edges(&mut self) {
+        self.label("Reverse direction");
+        for id in self.sel_e.clone() {
+            if let Some(t) = self.doc.edge_mut(id) {
+                std::mem::swap(&mut t.from, &mut t.to);
+                std::mem::swap(&mut t.from_pt, &mut t.to_pt);
+                t.bends.reverse();
+            }
+        }
+    }
+
+    fn edge_menu_items(&mut self, ui: &mut egui::Ui) {
+        let has_bends = self.sel_e.iter().filter_map(|id| self.edge(*id)).any(|e| !e.bends.is_empty() || e.route == Route::Elbow);
+        if ui.add_enabled(has_bends, egui::Button::new("Remove all bends (straight line)    Shift+B")).clicked() {
+            self.remove_all_bends();
+            ui.close_menu();
+        }
+        if ui.button("─  Make horizontal    Shift+H").clicked() {
+            self.make_axis(false);
+            ui.close_menu();
+        }
+        if ui.button("│  Make vertical    Shift+V").clicked() {
+            self.make_axis(true);
+            ui.close_menu();
+        }
+        if ui.button("└  Snap all segments to right angles").clicked() {
+            self.snap_right_angles();
+            ui.close_menu();
+        }
+        ui.separator();
+        if ui.button("⇄  Reverse direction").clicked() {
+            self.reverse_edges();
+            ui.close_menu();
+        }
+        if ui.button("🗑  Delete connector").clicked() {
+            self.delete_selection();
+            ui.close_menu();
+        }
+    }
+
+    fn context_menu_ui(&mut self, ui: &mut egui::Ui) {
+        match self.ctx_target {
+            CtxTarget::Bend(eid, i) => {
+                if ui.button("×  Remove this bend    Del").clicked() {
+                    self.remove_bend(eid, i);
+                    ui.close_menu();
+                }
+                self.edge_menu_items(ui);
+            }
+            CtxTarget::Edge(_) => self.edge_menu_items(ui),
+            CtxTarget::Node(n) => {
+                if ui.button("Edit text    F2").clicked() {
+                    self.start_edit(Editing::Node(n));
+                    ui.close_menu();
+                }
+                if ui.button("Duplicate    Ctrl+D").clicked() {
+                    self.duplicate();
+                    ui.close_menu();
+                }
+                if ui.button("Group selected    Ctrl+G").clicked() {
+                    self.group_selection();
+                    ui.close_menu();
+                }
+                if ui.button("Ungroup    Ctrl+Shift+G").clicked() {
+                    self.ungroup_selection();
+                    ui.close_menu();
+                }
+                if ui.button("Bring to front").clicked() {
+                    self.reorder(true);
+                    ui.close_menu();
+                }
+                if ui.button("Send to back").clicked() {
+                    self.reorder(false);
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button("🗑  Delete    Del").clicked() {
+                    self.delete_selection();
+                    ui.close_menu();
+                }
+            }
+            CtxTarget::Canvas(p) => {
+                if ui.button("Add a box here").clicked() {
+                    self.add_shape(Shape::RoundedRect, Some(p));
+                    ui.close_menu();
+                }
+                if ui.button("Draw a free arrow    A").clicked() {
+                    self.tool = Tool::Arrow;
+                    ui.close_menu();
+                }
+                if ui.button("Select all    Ctrl+A").clicked() {
+                    self.select_all();
+                    ui.close_menu();
+                }
+                if ui.button("Fit to window    Ctrl+0").clicked() {
+                    self.fit();
+                    ui.close_menu();
+                }
+            }
+        }
     }
 
     // ------------------------------------------------------------ files
@@ -908,6 +1325,7 @@ impl App {
             let sp = ctx.input(|i| i.pointer.press_origin()).or(pointer).unwrap();
             let wp = self.to_world(sp);
             let hovered_node = self.node_at(wp);
+            self.sel_bend = None;
             // finish any text editing when clicking on the canvas
             if self.editing.is_some() {
                 self.editing = None;
@@ -943,8 +1361,16 @@ impl App {
                                 if self.to_screen(hp).distance(sp) < 8.0 {
                                     let kind = match k {
                                         HandleKind::Insert(i) => {
-                                            self.doc.edge_mut(eid).unwrap().bends.insert(i, hp);
+                                            let e = self.doc.edge_mut(eid).unwrap();
+                                            e.bends.insert(i, hp);
+                                            e.lock = None;
                                             self.label("Bend connector");
+                                            self.sel_bend = Some((eid, i));
+                                            HandleKind::Bend(i)
+                                        }
+                                        HandleKind::Bend(i) => {
+                                            self.label("Move bend");
+                                            self.sel_bend = Some((eid, i));
                                             HandleKind::Bend(i)
                                         }
                                         other => {
@@ -984,6 +1410,10 @@ impl App {
                             self.tool = Tool::Select;
                         }
                     }
+                    Tool::Arrow => {
+                        let start = P::new(self.snap_v(wp.x), self.snap_v(wp.y));
+                        self.drag = Drag::Draw { start, from: hovered_node, cur: start };
+                    }
                     Tool::Connect => {
                         if let Some(n) = hovered_node {
                             self.drag = Drag::Connect { from: n, cur: wp };
@@ -995,25 +1425,20 @@ impl App {
                         if let Some(n) = hovered_node {
                             self.select_node_click(n, mods.shift || mods.command, mods.alt);
                             if self.sel_n.contains(&n) {
-                                let orig = self.sel_n.iter().filter_map(|id| self.doc.node(*id).map(|nd| (*id, nd.pos))).collect();
-                                let edge_orig = self
-                                    .doc
-                                    .edges
-                                    .iter()
-                                    .filter(|e| self.sel_n.contains(&e.from) && self.sel_n.contains(&e.to))
-                                    .map(|e| (e.id, e.bends.clone(), e.elbow_mid))
-                                    .collect();
-                                self.drag = Drag::Move { start: wp, orig, edge_orig, moved: false };
-                                self.label("Move");
+                                self.start_move(wp);
                             }
                         } else if let Some(e) = self.edge_at(wp) {
                             if mods.shift || mods.command {
                                 if !self.sel_e.remove(&e) {
                                     self.sel_e.insert(e);
                                 }
-                            } else {
+                            } else if !self.sel_e.contains(&e) {
                                 self.sel_e = [e].into();
                                 self.sel_n.clear();
+                            }
+                            // dragging the line itself moves it anywhere
+                            if self.sel_e.contains(&e) {
+                                self.start_move(wp);
                             }
                         } else {
                             if !(mods.shift || mods.command) {
@@ -1040,32 +1465,75 @@ impl App {
                     self.drag = Drag::None;
                 }
             }
-            Drag::Move { start, orig, edge_orig, moved } => {
+            Drag::Move { start, orig, mut edge_orig, moved, mut prepared } => {
                 let mut dlt = wp.sub(start);
-                if let Some((id0, p0)) = orig.first() {
-                    let _ = id0;
+                if let Some((_, p0)) = orig.first() {
                     let target = p0.add(dlt);
                     dlt = P::new(self.snap_v(target.x) - p0.x, self.snap_v(target.y) - p0.y);
+                } else {
+                    dlt = P::new(self.snap_v(dlt.x), self.snap_v(dlt.y));
+                }
+                if mods.shift {
+                    // constrain to a straight horizontal / vertical / diagonal move
+                    dlt = snap_angle(P::new(0.0, 0.0), dlt);
                 }
                 let moved = moved || dlt.len() > 0.5;
                 if moved {
+                    if !prepared {
+                        edge_orig = self.prepare_move_edges();
+                        prepared = true;
+                    }
                     for (id, p) in &orig {
                         if let Some(n) = self.doc.node_mut(*id) {
                             n.pos = p.add(dlt);
                         }
                     }
-                    for (eid, bends, mid) in &edge_orig {
-                        if let Some(e) = self.doc.edge_mut(*eid) {
-                            e.bends = bends.iter().map(|b| b.add(dlt)).collect();
-                            let vertical = e.elbow_vertical.unwrap_or(false);
-                            e.elbow_mid = mid.map(|m| m + if vertical { dlt.y } else { dlt.x });
+                    for (e0, v) in &edge_orig {
+                        let mut e = e0.clone();
+                        e.translate(dlt, *v);
+                        if let Some(t) = self.doc.edge_mut(e.id) {
+                            *t = e;
                         }
                     }
                     ctx.set_cursor_icon(CursorIcon::Grabbing);
                 }
-                self.drag = Drag::Move { start, orig, edge_orig, moved };
+                self.drag = Drag::Move { start, orig, edge_orig, moved, prepared };
                 if released || !down {
                     self.drag = Drag::None;
+                }
+            }
+            Drag::Draw { start, from, .. } => {
+                let mut cur = P::new(self.snap_v(wp.x), self.snap_v(wp.y));
+                if mods.shift {
+                    cur = snap_angle(start, cur);
+                }
+                self.drag = Drag::Draw { start, from, cur };
+                ctx.set_cursor_icon(CursorIcon::Crosshair);
+                if released || !down {
+                    self.drag = Drag::None;
+                    let to = hovered_node.filter(|n| Some(*n) != from);
+                    if start.dist(cur) > 12.0 || to.is_some() {
+                        self.label("Draw arrow");
+                        let id = self.doc.add_edge(from.unwrap_or(0), to.unwrap_or(0));
+                        self.apply_defaults(id);
+                        if let Some(e) = self.doc.edge_mut(id) {
+                            if e.route == Route::Elbow && (from.is_none() || to.is_none()) {
+                                e.route = Route::Straight;
+                            }
+                            if from.is_none() {
+                                e.from_pt = Some(start);
+                            }
+                            if to.is_none() {
+                                e.to_pt = Some(cur);
+                            }
+                        }
+                        self.sel_e = [id].into();
+                        self.sel_n.clear();
+                        self.status = "Arrow drawn. Drag the line to move it, drag a green end to resize or attach it to a shape.".into();
+                    }
+                    if !mods.shift {
+                        self.tool = Tool::Select;
+                    }
                 }
             }
             Drag::Resize { id, handle, orig, start } => {
@@ -1175,8 +1643,20 @@ impl App {
                 }
             }
             Drag::EdgeHandle { edge, kind } => {
-                let p = P::new(self.snap_v(wp.x), self.snap_v(wp.y));
+                let mut p = P::new(self.snap_v(wp.x), self.snap_v(wp.y));
                 let vertical = self.geoms.iter().find(|g| g.id == edge).map(|g| g.elbow_vertical).unwrap_or(false);
+                if mods.shift {
+                    if let HandleKind::Bend(i) = kind {
+                        let prev = if i == 0 {
+                            self.geoms.iter().find(|g| g.id == edge).map(|g| g.pts[0])
+                        } else {
+                            self.doc.edges.iter().find(|e| e.id == edge).map(|e| e.bends[i - 1])
+                        };
+                        if let Some(prev) = prev {
+                            p = snap_angle(prev, wp);
+                        }
+                    }
+                }
                 if let Some(e) = self.doc.edge_mut(edge) {
                     match kind {
                         HandleKind::Bend(i) => {
@@ -1197,24 +1677,98 @@ impl App {
                 }
             }
             Drag::EdgeEnd { edge, is_start, .. } => {
-                self.drag = Drag::EdgeEnd { edge, is_start, cur: wp };
+                let mut p = P::new(self.snap_v(wp.x), self.snap_v(wp.y));
+                if mods.shift {
+                    if let Some(g) = self.geoms.iter().find(|g| g.id == edge) {
+                        let other = if is_start { *g.pts.last().unwrap() } else { g.pts[0] };
+                        p = snap_angle(other, wp);
+                    }
+                }
+                self.drag = Drag::EdgeEnd { edge, is_start, cur: p };
                 ctx.set_cursor_icon(CursorIcon::Crosshair);
+                let target = hovered_node;
+                if let Some(e) = self.doc.edge_mut(edge) {
+                    // follow the pointer live
+                    if is_start {
+                        e.from_pt = Some(p);
+                    } else {
+                        e.to_pt = Some(p);
+                    }
+                }
                 if released || !down {
-                    if let Some(n) = hovered_node {
-                        self.label("Reconnect");
-                        if let Some(e) = self.doc.edge_mut(edge) {
-                            if is_start {
-                                e.from = n;
-                            } else {
-                                e.to = n;
+                    if let Some(e) = self.doc.edge_mut(edge) {
+                        match target {
+                            Some(n) => {
+                                if is_start {
+                                    e.from = n;
+                                    e.from_pt = None;
+                                } else {
+                                    e.to = n;
+                                    e.to_pt = None;
+                                }
+                            }
+                            None => {
+                                if is_start {
+                                    e.from = 0;
+                                } else {
+                                    e.to = 0;
+                                }
+                                if e.route == Route::Elbow {
+                                    e.route = Route::Straight;
+                                }
                             }
                         }
                     }
+                    self.label(if target.is_some() { "Reconnect" } else { "Move line end" });
                     self.drag = Drag::None;
                 }
             }
             Drag::None => {}
         }
+
+        // ---- right-click: remember what was clicked for the context menu
+        if over_canvas && ctx.input(|i| i.pointer.secondary_pressed()) {
+            let sp = pointer.unwrap_or_default();
+            let mut target = None;
+            for g in &self.geoms {
+                for (k, hp) in &g.handles {
+                    if let HandleKind::Bend(i) = k {
+                        if self.to_screen(*hp).distance(sp) < 9.0 {
+                            target = Some(CtxTarget::Bend(g.id, *i));
+                        }
+                    }
+                }
+            }
+            let target = target.unwrap_or_else(|| {
+                if let Some(n) = self.node_at(wp) {
+                    CtxTarget::Node(n)
+                } else if let Some(e) = self.edge_at(wp) {
+                    CtxTarget::Edge(e)
+                } else {
+                    CtxTarget::Canvas(wp)
+                }
+            });
+            match target {
+                CtxTarget::Node(n) => {
+                    if !self.sel_n.contains(&n) {
+                        self.select_node_click(n, false, false);
+                        self.sel_e.clear();
+                    }
+                }
+                CtxTarget::Edge(e) | CtxTarget::Bend(e, _) => {
+                    if !self.sel_e.contains(&e) {
+                        self.sel_e = [e].into();
+                        self.sel_n.clear();
+                    }
+                    if let CtxTarget::Bend(e, i) = target {
+                        self.sel_bend = Some((e, i));
+                    }
+                }
+                CtxTarget::Canvas(_) => {}
+            }
+            self.ctx_target = target;
+        }
+        resp.context_menu(|ui| self.context_menu_ui(ui));
 
         // ---- keyboard
         if !ctx.wants_keyboard_input() {
@@ -1271,6 +1825,9 @@ impl App {
                 for (k, hp) in &g.handles {
                     let s = self.to_screen(*hp);
                     match k {
+                        HandleKind::Bend(i) if self.sel_bend == Some((eid, *i)) => {
+                            painter.circle(s, 7.5, Color32::from_rgb(234, 88, 12), Stroke::new(2.0_f32, Color32::WHITE));
+                        }
                         HandleKind::Insert(_) => {
                             painter.circle(s, 4.0, Color32::from_rgba_unmultiplied(255, 255, 255, 220), Stroke::new(1.2_f32, accent));
                         }
@@ -1324,6 +1881,23 @@ impl App {
             }
             Drag::EdgeEnd { cur, .. } => {
                 painter.circle_filled(self.to_screen(*cur), 5.0, Color32::from_rgb(16, 185, 129));
+                if let Some(t) = hovered_node {
+                    if let Some(n) = self.doc.node(t) {
+                        let r = Rect::from_min_max(self.to_screen(n.pos), self.to_screen(n.pos.add(P::new(n.w, n.h)))).expand(4.0);
+                        painter.rect_stroke(r, CornerRadius::same(4), Stroke::new(2.5_f32, Color32::from_rgb(16, 185, 129)), StrokeKind::Middle);
+                    }
+                }
+            }
+            Drag::Draw { start, from, cur } => {
+                let s = match from.and_then(|f| self.doc.node(f)) {
+                    Some(n) => geom::anchor(n, *cur),
+                    None => *start,
+                };
+                let (a, b) = (self.to_screen(s), self.to_screen(*cur));
+                painter.line_segment([a, b], Stroke::new(2.0_f32, accent));
+                let dir = (b - a).normalized();
+                let n = Vec2::new(-dir.y, dir.x);
+                painter.add(EShape::convex_polygon(vec![b, b - dir * 12.0 + n * 5.0, b - dir * 12.0 - n * 5.0], accent, Stroke::NONE));
                 if let Some(t) = hovered_node {
                     if let Some(n) = self.doc.node(t) {
                         let r = Rect::from_min_max(self.to_screen(n.pos), self.to_screen(n.pos.add(P::new(n.w, n.h)))).expand(4.0);
@@ -1460,7 +2034,22 @@ impl App {
             self.select_all();
         }
         if k(Modifiers::NONE, Key::Delete) || k(Modifiers::NONE, Key::Backspace) {
-            self.delete_selection();
+            match self.sel_bend {
+                Some((eid, i)) if self.sel_e.contains(&eid) => self.remove_bend(eid, i),
+                _ => self.delete_selection(),
+            }
+        }
+        if k(Modifiers::NONE, Key::A) {
+            self.tool = Tool::Arrow;
+        }
+        if k(Modifiers::SHIFT, Key::H) {
+            self.make_axis(false);
+        }
+        if k(Modifiers::SHIFT, Key::V) {
+            self.make_axis(true);
+        }
+        if k(Modifiers::SHIFT, Key::B) {
+            self.remove_all_bends();
         }
         if k(Modifiers::NONE, Key::Escape) {
             self.tool = Tool::Select;
@@ -1487,7 +2076,7 @@ impl App {
         if k(Modifiers::COMMAND, Key::Minus) {
             self.zoom_by(1.0 / 1.2);
         }
-        let step = if ctx.input(|i| i.modifiers.shift) { 10.0 } else { 1.0 };
+        let step = ctx.input(|i| if i.modifiers.command { 50.0 } else if i.modifiers.shift { 10.0 } else { 1.0 });
         let mut nudge = P::new(0.0, 0.0);
         ctx.input(|i| {
             if i.key_pressed(Key::ArrowLeft) {
@@ -1503,13 +2092,8 @@ impl App {
                 nudge.y += step;
             }
         });
-        if nudge.len() > 0.0 && !self.sel_n.is_empty() {
-            self.label("Nudge");
-            for id in self.sel_n.clone() {
-                if let Some(n) = self.doc.node_mut(id) {
-                    n.pos = n.pos.add(nudge);
-                }
-            }
+        if nudge.len() > 0.0 {
+            self.nudge_selection(nudge);
         }
     }
 
@@ -1897,35 +2481,182 @@ impl App {
             self.pending_label.get_or_insert_with(|| "Format connector".into());
         }
         ui.separator();
+        ui.strong("Bends and angle");
+        let nb: usize = ids.iter().filter_map(|id| self.edge(*id)).map(|e| e.bends.len()).sum();
+        let any_elbow = ids.iter().filter_map(|id| self.edge(*id)).any(|e| e.route == Route::Elbow);
+        ui.label(if any_elbow { "Elbow line (right-angled corners)".to_string() } else { format!("Bend points: {nb}") });
         ui.horizontal_wrapped(|ui| {
-            if ui.button("⇄ Swap ends").clicked() {
-                self.label("Swap direction");
-                for id in &ids {
-                    if let Some(t) = self.doc.edge_mut(*id) {
-                        std::mem::swap(&mut t.from, &mut t.to);
-                        t.bends.reverse();
-                    }
+            if let Some((eid, i)) = self.sel_bend {
+                if ids.contains(&eid) && ui.button("× Remove selected bend").on_hover_text("Delete key also works").clicked() {
+                    self.remove_bend(eid, i);
                 }
             }
-            if ui.button("Reset bends").clicked() {
-                self.label("Reset bends");
-                for id in &ids {
-                    if let Some(t) = self.doc.edge_mut(*id) {
-                        t.bends.clear();
-                        t.elbow_mid = None;
-                        t.elbow_vertical = None;
+            if ui
+                .add_enabled(nb > 0 || any_elbow, egui::Button::new("Remove all bends"))
+                .on_hover_text("Straighten the line (Shift+B)")
+                .clicked()
+            {
+                self.remove_all_bends();
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("─ Horizontal").on_hover_text("Make the line exactly horizontal (Shift+H)").clicked() {
+                self.make_axis(false);
+            }
+            if ui.button("│ Vertical").on_hover_text("Make the line exactly vertical (Shift+V)").clicked() {
+                self.make_axis(true);
+            }
+            if ui.button("└ Right angles").on_hover_text("Turn every slanted segment into a horizontal or vertical one").clicked() {
+                self.snap_right_angles();
+            }
+        });
+        if ids.len() == 1 {
+            if let Some(lock) = self.edge(ids[0]).and_then(|e| if e.bends.is_empty() { e.lock } else { None }) {
+                ui.horizontal(|ui| {
+                    ui.label(format!("✔ Kept {}", if lock == Axis::Vertical { "vertical" } else { "horizontal" }));
+                    if ui.small_button("free angle").clicked() {
+                        self.label("Free angle");
+                        if let Some(t) = self.doc.edge_mut(ids[0]) {
+                            t.lock = None;
+                        }
                     }
-                }
+                });
+            }
+        }
+        ui.separator();
+        ui.strong("Move the line");
+        ui.horizontal(|ui| {
+            let st = self.move_step;
+            if ui.button("←").on_hover_text("Move left").clicked() {
+                self.label("Move connector");
+                self.nudge_selection(P::new(-st, 0.0));
+            }
+            if ui.button("↑").on_hover_text("Move up").clicked() {
+                self.label("Move connector");
+                self.nudge_selection(P::new(0.0, -st));
+            }
+            if ui.button("↓").on_hover_text("Move down").clicked() {
+                self.label("Move connector");
+                self.nudge_selection(P::new(0.0, st));
+            }
+            if ui.button("→").on_hover_text("Move right").clicked() {
+                self.label("Move connector");
+                self.nudge_selection(P::new(st, 0.0));
+            }
+            ui.add(egui::DragValue::new(&mut self.move_step).range(1.0..=1000.0).suffix(" px"));
+        });
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("⇄ Reverse").clicked() {
+                self.reverse_edges();
             }
             if ui.button("🗑 Delete").clicked() {
                 self.delete_selection();
             }
         });
         ui.label(
-            egui::RichText::new("Drag the hollow dots to bend the line, double-click a solid dot to remove a bend, drag the green ends to reconnect.")
-                .weak()
-                .size(11.0),
+            egui::RichText::new(
+                "• Drag the line itself to move it anywhere (Shift keeps the move straight).\n\
+                 • Drag a hollow dot to add a bend; click a solid dot and press Delete to remove it, or right-click it.\n\
+                 • Drag a green end onto a shape to attach it, or onto empty space to leave it free.\n\
+                 • Hold Shift while dragging ends or bends to snap to horizontal, vertical or 45°.\n\
+                 • Arrow keys move the selection (Shift ×10, Ctrl ×50).",
+            )
+            .weak()
+            .size(11.0),
         );
+    }
+}
+
+// ---------------------------------------------------------------- updates
+
+impl App {
+    fn update_banner(&mut self, ctx: &egui::Context) {
+        if self.update_banner_closed {
+            return;
+        }
+        let state = self.update.lock().map(|s| s.clone()).unwrap_or(update::State::Checking);
+        if let update::State::Available { version, .. } = state {
+            egui::TopBottomPanel::bottom("update-banner").frame(egui::Frame::default().fill(Color32::from_rgb(219, 234, 254)).inner_margin(6.0)).show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("⬆ FrameMap Studio {version} is available (you have {}).", env!("CARGO_PKG_VERSION"))).strong());
+                    if ui.button("Download update").clicked() {
+                        let _ = webbrowser::open(&update::download_url());
+                        self.show_update_help = true;
+                    }
+                    if ui.button("What's new").clicked() {
+                        self.update_dialog = true;
+                    }
+                    if ui.button("Later").clicked() {
+                        self.update_banner_closed = true;
+                    }
+                });
+            });
+        }
+    }
+
+    fn update_windows(&mut self, ctx: &egui::Context) {
+        if self.update_dialog {
+            let state = self.update.lock().map(|s| s.clone()).unwrap_or(update::State::Checking);
+            let mut open = true;
+            egui::Window::new("Software update").open(&mut open).collapsible(false).resizable(false).default_width(380.0).show(ctx, |ui| {
+                match &state {
+                    update::State::Checking => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Checking for a newer version…");
+                        });
+                    }
+                    update::State::UpToDate { latest } => {
+                        ui.label(format!("✔ You have the latest version ({}).", env!("CARGO_PKG_VERSION")));
+                        if !latest.is_empty() {
+                            ui.label(egui::RichText::new(format!("Latest published: {latest}")).weak());
+                        }
+                    }
+                    update::State::Available { version, notes } => {
+                        ui.label(egui::RichText::new(format!("Version {version} is available. You have {}.", env!("CARGO_PKG_VERSION"))).strong());
+                        if !notes.trim().is_empty() {
+                            egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                                ui.label(notes);
+                            });
+                        }
+                        if ui.button("Download update").clicked() {
+                            let _ = webbrowser::open(&update::download_url());
+                            self.show_update_help = true;
+                        }
+                    }
+                    update::State::Failed(e) => {
+                        ui.label("Couldn't check for updates (are you online?).");
+                        ui.label(egui::RichText::new(e).weak().size(11.0));
+                        if ui.button("Open the download page").clicked() {
+                            let _ = webbrowser::open(&update::releases_page());
+                        }
+                    }
+                }
+            });
+            self.update_dialog = open;
+        }
+        if self.show_update_help {
+            let mut open = true;
+            egui::Window::new("Installing the update").open(&mut open).collapsible(false).resizable(false).default_width(400.0).show(ctx, |ui| {
+                ui.label("Your browser is downloading the new version.");
+                ui.add_space(4.0);
+                if cfg!(target_os = "macos") {
+                    ui.label("1. Save your work and quit FrameMap Studio.");
+                    ui.label("2. Open the downloaded .dmg and drag FrameMap Studio into Applications.");
+                    ui.label("3. Choose “Replace” when asked.");
+                } else {
+                    ui.label("1. Save your work and close FrameMap Studio.");
+                    ui.label("2. Run the downloaded FrameMap-Studio-Setup.exe.");
+                    ui.label("3. Click through the installer — it replaces the old version.");
+                }
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Your saved diagrams (.fmap files) are not touched by the update.").weak());
+                if ui.button("Save now").clicked() {
+                    self.save(false);
+                }
+            });
+            self.show_update_help = open;
+        }
     }
 }
 
@@ -1969,6 +2700,21 @@ impl eframe::App for App {
         self.menu_bar(ctx);
         self.toolbar(ctx);
 
+        egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "FrameMap Studio v{} · © 2026 Muruhukye Jacob, Biostatistician/Programmer and Researcher · Author and owner · All rights reserved",
+                        env!("CARGO_PKG_VERSION")
+                    ))
+                    .size(11.0)
+                    .color(Color32::from_rgb(71, 85, 105)),
+                );
+            });
+        });
+
+        self.update_banner(ctx);
+
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(&self.status);
@@ -1998,6 +2744,9 @@ impl eframe::App for App {
             });
             if ui.selectable_label(self.tool == Tool::Connect, "↗ Connect").on_hover_text("Drag from one shape to another (C)").clicked() {
                 self.tool = Tool::Connect;
+            }
+            if ui.selectable_label(self.tool == Tool::Arrow, "➚ Free arrow").on_hover_text("Draw an arrow anywhere, not attached to shapes (A)").clicked() {
+                self.tool = Tool::Arrow;
             }
             ui.separator();
             ui.strong("Shapes");
@@ -2148,6 +2897,13 @@ impl App {
                         self.minimize();
                         ui.close_menu();
                     }
+                    if ui.button("➚ Draw a free arrow    A").clicked() {
+                        self.tool = Tool::Arrow;
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    ui.label(egui::RichText::new("For the selected connector(s):").weak());
+                    self.edge_menu_items(ui);
                     ui.separator();
                     ui.label("Show unavoidable crossings as:");
                     ui.radio_value(&mut self.doc.hop_style, HopStyle::Arc, "Hop / bridge");
@@ -2175,6 +2931,16 @@ impl App {
                         self.show_help = true;
                         ui.close_menu();
                     }
+                    if ui.button("Check for updates…").clicked() {
+                        self.update = update::check_in_background(ctx.clone());
+                        self.update_dialog = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Download page").clicked() {
+                        let _ = webbrowser::open(&update::releases_page());
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     if ui.button("About").clicked() {
                         self.show_about = true;
                         ui.close_menu();
@@ -2200,6 +2966,9 @@ impl App {
                 }
                 if ui.selectable_label(self.tool == Tool::Connect, "↗ Connect").clicked() {
                     self.tool = Tool::Connect;
+                }
+                if ui.selectable_label(self.tool == Tool::Arrow, "➚ Free arrow").on_hover_text("Draw an arrow anywhere (A)").clicked() {
+                    self.tool = Tool::Arrow;
                 }
                 ui.separator();
                 if ui.button("⧉ Group").on_hover_text("Join selected shapes so they move as one (Ctrl+G)").clicked() {
@@ -2378,7 +3147,9 @@ impl App {
                     ui.label("• Double-click empty canvas to add a box; double-click a shape or connector to edit its text.");
                     ui.label("• Hover a shape and drag from a blue dot to another shape to connect them. Drop on empty canvas to create and connect a new shape in one go.");
                     ui.label("• Select a connector to change it: straight / curved / elbow, single or double-sided arrow, arrow type, width, colour, dashes and a label.");
-                    ui.label("• Flexible lines: drag the hollow dots on a selected connector to bend it; double-click a solid dot to remove that bend. Drag the green ends to reconnect.");
+                    ui.label("• Flexible lines: drag the hollow dots on a selected connector to bend it. To remove a bend, click its solid dot and press Delete, double-click it, or right-click it. 'Remove all bends' (Shift+B) straightens the whole line.");
+                    ui.label("• Moving lines: drag a selected line to move it anywhere, use the arrow keys (Shift ×10, Ctrl ×50) or the arrow buttons in the panel. Drag a green end onto empty canvas to free it, or onto a shape to attach it. The Free arrow tool (A) draws arrows anywhere.");
+                    ui.label("• Slanted lines: 'Make horizontal' (Shift+H) or 'Make vertical' (Shift+V) straightens a line, moving the end shape into line if needed. 'Right angles' turns every slanted segment of a bent line into horizontal/vertical pieces. Hold Shift while dragging to snap to 0°, 45° or 90°.");
                     ui.add_space(6.0);
                     ui.strong("Crossing lines");
                     ui.label("Connectors may meet at shapes but are not meant to cross. Use Connectors ▸ Minimise crossings to re-route them automatically. Any crossing that cannot be avoided is drawn with a hop (bridge) so readers can see the lines are not joined. Choose hop, gap or plain in the Connectors menu.");
@@ -2393,8 +3164,11 @@ impl App {
                             ("Ctrl+C / V / X / D", "Copy / paste / cut / duplicate"),
                             ("Ctrl+G / Ctrl+Shift+G", "Group / ungroup"),
                             ("Delete", "Delete selection"),
-                            ("Arrow keys", "Nudge (Shift = 10 px)"),
-                            ("V / C", "Select tool / connect tool"),
+                            ("Arrow keys", "Move selection (Shift = 10 px, Ctrl = 50 px)"),
+                            ("V / C / A", "Select / connect / free-arrow tool"),
+                            ("Shift+H / Shift+V", "Make connector horizontal / vertical"),
+                            ("Shift+B", "Remove all bends from connector"),
+                            ("Right-click", "Menu for a shape, line or bend"),
                             ("F2", "Edit text of selected shape"),
                             ("Ctrl+scroll", "Zoom; scroll or middle-drag or Space+drag to pan"),
                             ("Ctrl+0", "Fit diagram to window"),
@@ -2412,13 +3186,24 @@ impl App {
             self.show_help = open;
         }
 
+        self.update_windows(ctx);
+
         if self.show_about {
             let mut open = true;
             egui::Window::new("About").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-                ui.heading("FrameMap Studio 1.0");
+                ui.heading(format!("FrameMap Studio {}", env!("CARGO_PKG_VERSION")));
                 ui.label("Conceptual framework and systems map builder.");
-                ui.label("Made with Rust and egui.");
-                ui.label("Author: Muruhukye Jacob");
+                ui.add_space(6.0);
+                ui.strong("Author and owner: Muruhukye Jacob");
+                ui.label("Biostatistician/Programmer and Researcher");
+                ui.label("© 2026 Muruhukye Jacob. All rights reserved.");
+                ui.label(
+                    egui::RichText::new("This software may not be copied, modified or redistributed without the author's written permission.")
+                        .weak()
+                        .size(11.0),
+                );
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("Built with Rust. Includes open-source components (egui, tiny-skia, ab_glyph, DejaVu fonts and others) under their own licences.").weak().size(10.0));
             });
             self.show_about = open;
         }

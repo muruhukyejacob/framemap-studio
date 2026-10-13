@@ -1,17 +1,19 @@
 ; FrameMap Studio — Windows installer (NSIS 3)
 ; Build from the repository root after `cargo build --release`:
-;   makensis packaging\windows\installer.nsi
+;   makensis /DVERSION=1.1.0 packaging\windows\installer.nsi
 
 Unicode true
 !define APPNAME   "FrameMap Studio"
 !define APPID     "FrameMapStudio"
-!define VERSION   "1.0.0"
+!ifndef VERSION
+  !define VERSION "1.1.0"
+!endif
 !define PUBLISHER "Muruhukye Jacob"
 !define EXE       "framemap.exe"
 !define ROOT      "..\.."
 
 Name "${APPNAME}"
-OutFile "${ROOT}\dist\FrameMap-Studio-Setup-${VERSION}.exe"
+OutFile "${ROOT}\dist\FrameMap-Studio-Setup.exe"
 InstallDir "$PROGRAMFILES64\${APPNAME}"
 InstallDirRegKey HKLM "Software\${APPID}" "InstallDir"
 RequestExecutionLevel admin
@@ -22,6 +24,7 @@ BrandingText "${APPNAME} ${VERSION}"
 !define MUI_ICON   "${ROOT}\assets\icon.ico"
 !define MUI_UNICON "${ROOT}\assets\icon.ico"
 !define MUI_ABORTWARNING
+!define MUI_WELCOMEPAGE_TEXT "This will install ${APPNAME} ${VERSION} on your computer.$\r$\n$\r$\nIf an older version is installed it will be updated in place; your diagrams are not affected.$\r$\n$\r$\nPlease close ${APPNAME} before continuing.$\r$\n$\r$\nAuthor: Muruhukye Jacob, Biostatistician/Programmer and Researcher."
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${EXE}"
 !define MUI_FINISHPAGE_RUN_TEXT "Start ${APPNAME}"
 
@@ -39,7 +42,7 @@ VIAddVersionKey "ProductName" "${APPNAME}"
 VIAddVersionKey "CompanyName" "${PUBLISHER}"
 VIAddVersionKey "FileDescription" "${APPNAME} installer"
 VIAddVersionKey "FileVersion" "${VERSION}"
-VIAddVersionKey "LegalCopyright" "MIT License"
+VIAddVersionKey "LegalCopyright" "(c) 2026 Muruhukye Jacob. All rights reserved."
 
 Section "Install"
   SetShellVarContext all

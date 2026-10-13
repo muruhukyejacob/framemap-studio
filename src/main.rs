@@ -7,6 +7,7 @@ mod geom;
 mod model;
 mod scene;
 mod templates;
+mod update;
 
 use std::path::PathBuf;
 

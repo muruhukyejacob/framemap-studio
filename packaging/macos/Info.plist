@@ -5,8 +5,8 @@
   <key>CFBundleName</key><string>FrameMap Studio</string>
   <key>CFBundleDisplayName</key><string>FrameMap Studio</string>
   <key>CFBundleIdentifier</key><string>org.framemap.studio</string>
-  <key>CFBundleVersion</key><string>1.0.0</string>
-  <key>CFBundleShortVersionString</key><string>1.0.0</string>
+  <key>CFBundleVersion</key><string>__VERSION__</string>
+  <key>CFBundleShortVersionString</key><string>__VERSION__</string>
   <key>CFBundleExecutable</key><string>framemap</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -14,6 +14,6 @@
   <key>LSMinimumSystemVersion</key><string>10.15</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSHumanReadableCopyright</key><string>MIT License — Muruhukye Jacob</string>
+  <key>NSHumanReadableCopyright</key><string>© 2026 Muruhukye Jacob, Biostatistician/Programmer and Researcher. All rights reserved.</string>
 </dict>
 </plist>

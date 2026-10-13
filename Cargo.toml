@@ -1,10 +1,10 @@
 [package]
 name = "framemap"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "FrameMap Studio - conceptual framework and systems map builder"
-authors = ["Muruhukye Jacob"]
-license = "MIT"
+authors = ["Muruhukye Jacob (Biostatistician/Programmer and Researcher)"]
+license-file = "LICENSE"
 
 [dependencies]
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
@@ -16,6 +16,8 @@ tiny-skia = "0.11"
 ab_glyph = "0.2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 png = "0.17"
+ureq = { version = "2", features = ["json", "native-certs"] }
+webbrowser = "1"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

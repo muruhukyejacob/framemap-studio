@@ -8,4 +8,5 @@ copy /Y target\release\framemap.exe "dist\FrameMap Studio.exe" >nul
 echo Portable app: dist\FrameMap Studio.exe
 set MAKENSIS=makensis
 where makensis >nul 2>nul || set MAKENSIS="C:\Program Files (x86)\NSIS\makensis.exe"
-%MAKENSIS% packaging\windows\installer.nsi && echo Installer: dist\FrameMap-Studio-Setup-1.0.0.exe
+for /f "tokens=3 delims= " %%v in ('findstr /b "version" Cargo.toml') do set VER=%%~v
+%MAKENSIS% /DVERSION=%VER% packaging\windows\installer.nsi && echo Installer: dist\FrameMap-Studio-Setup.exe

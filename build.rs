@@ -5,9 +5,9 @@ fn main() {
         let mut res = winresource::WindowsResource::new();
         res.set_icon("assets/icon.ico");
         res.set("ProductName", "FrameMap Studio");
-        res.set("FileDescription", "FrameMap Studio - conceptual framework builder");
+        res.set("FileDescription", "FrameMap Studio - conceptual framework builder by Muruhukye Jacob");
         res.set("CompanyName", "Muruhukye Jacob");
-        res.set("LegalCopyright", "MIT License");
+        res.set("LegalCopyright", "(c) 2026 Muruhukye Jacob. All rights reserved.");
         if let Err(e) = res.compile() {
             println!("cargo:warning=could not embed icon: {e}");
         }

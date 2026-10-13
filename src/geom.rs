@@ -283,32 +283,147 @@ pub struct EdgeGeom {
     pub elbow_vertical: bool,
 }
 
-pub fn elbow_is_vertical(a: &Node, b: &Node, e: &Edge) -> bool {
+/// One end of a connector: attached to a shape, or a free point on the canvas.
+#[derive(Clone, Copy)]
+pub enum End<'a> {
+    Node(&'a Node),
+    Pt(P),
+}
+
+impl<'a> End<'a> {
+    pub fn center(&self) -> P {
+        match self {
+            End::Node(n) => n.center(),
+            End::Pt(p) => *p,
+        }
+    }
+    pub fn anchor(&self, toward: P) -> P {
+        match self {
+            End::Node(n) => anchor(n, toward),
+            End::Pt(p) => *p,
+        }
+    }
+    /// Bounding box (lo, hi).
+    pub fn bbox(&self) -> (P, P) {
+        match self {
+            End::Node(n) => (n.pos, n.pos.add(P::new(n.w, n.h))),
+            End::Pt(p) => (*p, *p),
+        }
+    }
+    /// Where a ray from `origin` (inside the shape) in direction `dir` leaves it.
+    pub fn ray_exit(&self, origin: P, dir: P) -> P {
+        match self {
+            End::Pt(p) => *p,
+            End::Node(n) => {
+                let far = origin.add(dir.norm().mul(10000.0));
+                let poly = outline(n);
+                let mut best: Option<f32> = None;
+                for i in 0..poly.len() {
+                    if let Some((t, _)) = seg_intersect(origin, far, poly[i], poly[(i + 1) % poly.len()]) {
+                        best = Some(best.map_or(t, |b: f32| b.max(t)));
+                    }
+                }
+                match best {
+                    Some(t) => origin.lerp(far, t),
+                    None => anchor(n, origin.add(dir)),
+                }
+            }
+        }
+    }
+}
+
+pub fn edge_ends<'a>(d: &'a Diagram, e: &Edge) -> Option<(End<'a>, End<'a>)> {
+    let a = match e.from_pt {
+        Some(p) => End::Pt(p),
+        None => End::Node(d.node(e.from)?),
+    };
+    let b = match e.to_pt {
+        Some(p) => End::Pt(p),
+        None => End::Node(d.node(e.to)?),
+    };
+    Some((a, b))
+}
+
+pub fn elbow_is_vertical(a: End, b: End, e: &Edge) -> bool {
     if let Some(v) = e.elbow_vertical {
         return v;
     }
     let (ca, cb) = (a.center(), b.center());
-    let gap_x = (cb.x - ca.x).abs() - (a.w + b.w) / 2.0;
-    let gap_y = (cb.y - ca.y).abs() - (a.h + b.h) / 2.0;
+    let ((alo, ahi), (blo, bhi)) = (a.bbox(), b.bbox());
+    let gap_x = (cb.x - ca.x).abs() - ((ahi.x - alo.x) + (bhi.x - blo.x)) / 2.0;
+    let gap_y = (cb.y - ca.y).abs() - ((ahi.y - alo.y) + (bhi.y - blo.y)) / 2.0;
     gap_y > gap_x
 }
 
+/// End points of a straight connector held exactly horizontal (or vertical).
+/// Returns None when the two ends do not overlap along the other axis.
+pub fn locked_ends(a: End, b: End, vertical: bool) -> Option<(P, P)> {
+    // "across" is the coordinate that stays constant along the line
+    let across = |p: P| if vertical { p.x } else { p.y };
+    let along = |p: P| if vertical { p.y } else { p.x };
+    let mk = |along_v: f32, across_v: f32| if vertical { P::new(across_v, along_v) } else { P::new(along_v, across_v) };
+    let ((alo, ahi), (blo, bhi)) = (a.bbox(), b.bbox());
+    let level = match (a, b) {
+        (End::Pt(p), _) => {
+            if let End::Node(_) = b {
+                if across(p) < across(blo) - 0.5 || across(p) > across(bhi) + 0.5 {
+                    return None;
+                }
+            }
+            across(p)
+        }
+        (_, End::Pt(q)) => {
+            if across(q) < across(alo) - 0.5 || across(q) > across(ahi) + 0.5 {
+                return None;
+            }
+            across(q)
+        }
+        _ => {
+            let lo = across(alo).max(across(blo));
+            let hi = across(ahi).min(across(bhi));
+            if lo > hi - 2.0 {
+                return None;
+            }
+            (lo + hi) / 2.0
+        }
+    };
+    let (ca, cb) = (along(a.center()), along(b.center()));
+    let dir = if cb >= ca { 1.0 } else { -1.0 };
+    let dvec = mk(dir, 0.0);
+    let s = a.ray_exit(mk(ca, level), dvec);
+    let t = b.ray_exit(mk(cb, level), dvec.mul(-1.0));
+    Some((s, t))
+}
+
 pub fn route_edge(d: &Diagram, e: &Edge) -> Option<EdgeGeom> {
-    let a = d.node(e.from)?;
-    let b = d.node(e.to)?;
+    let (a, b) = edge_ends(d, e)?;
     match e.route {
         Route::Straight | Route::Curved => {
             let first = e.bends.first().copied().unwrap_or(b.center());
             let last = e.bends.last().copied().unwrap_or(a.center());
-            let (s, t) = if e.from == e.to && e.bends.is_empty() {
+            let self_loop = e.from_pt.is_none() && e.to_pt.is_none() && e.from == e.to;
+            let (s, t) = if self_loop && e.bends.is_empty() {
+                let End::Node(a) = a else { return None };
                 // self loop: synthesise two bends above the node
                 let c = a.center();
                 let s = anchor(a, P::new(c.x - a.w * 0.2, a.pos.y - 10.0));
                 let t = anchor(a, P::new(c.x + a.w * 0.2, a.pos.y - 10.0));
                 let loop_pts = vec![s, P::new(c.x - a.w * 0.25, a.pos.y - 50.0), P::new(c.x + a.w * 0.25, a.pos.y - 50.0), t];
                 return Some(EdgeGeom { id: e.id, pts: catmull_rom(&loop_pts), handles: vec![], elbow_vertical: false });
+            } else if let (Some(ax), true) = (e.lock, e.bends.is_empty()) {
+                let vertical = ax == Axis::Vertical;
+                match (a, b) {
+                    (End::Pt(p), End::Pt(q)) => {
+                        if vertical {
+                            (p, P::new(p.x, q.y))
+                        } else {
+                            (p, P::new(q.x, p.y))
+                        }
+                    }
+                    _ => locked_ends(a, b, vertical).unwrap_or((a.anchor(first), b.anchor(last))),
+                }
             } else {
-                (anchor(a, first), anchor(b, last))
+                (a.anchor(first), b.anchor(last))
             };
             let mut ctrl = vec![s];
             ctrl.extend(e.bends.iter().copied());
@@ -332,14 +447,14 @@ pub fn route_edge(d: &Diagram, e: &Edge) -> Option<EdgeGeom> {
             let (ca, cb) = (a.center(), b.center());
             let pts = if !vertical {
                 let dir = if cb.x >= ca.x { 1.0 } else { -1.0 };
-                let s = anchor(a, ca.add(P::new(dir, 0.0)));
-                let t = anchor(b, cb.add(P::new(-dir, 0.0)));
+                let s = a.anchor(ca.add(P::new(dir, 0.0)));
+                let t = b.anchor(cb.add(P::new(-dir, 0.0)));
                 let mx = e.elbow_mid.unwrap_or((s.x + t.x) / 2.0);
                 vec![s, P::new(mx, s.y), P::new(mx, t.y), t]
             } else {
                 let dir = if cb.y >= ca.y { 1.0 } else { -1.0 };
-                let s = anchor(a, ca.add(P::new(0.0, dir)));
-                let t = anchor(b, cb.add(P::new(0.0, -dir)));
+                let s = a.anchor(ca.add(P::new(0.0, dir)));
+                let t = b.anchor(cb.add(P::new(0.0, -dir)));
                 let my = e.elbow_mid.unwrap_or((s.y + t.y) / 2.0);
                 vec![s, P::new(s.x, my), P::new(t.x, my), t]
             };
@@ -533,6 +648,9 @@ pub fn minimize_crossings(d: &mut Diagram) -> (usize, usize) {
                 continue;
             }
             let orig = d.edges[idx].clone();
+            if orig.from_pt.is_some() || orig.to_pt.is_some() {
+                continue; // free-standing arrows are placed by hand
+            }
             let (Some(a), Some(b)) = (d.node(orig.from).cloned(), d.node(orig.to).cloned()) else { continue };
             let (ca, cb) = (a.center(), b.center());
             let mid = ca.lerp(cb, 0.5);
@@ -542,6 +660,7 @@ pub fn minimize_crossings(d: &mut Diagram) -> (usize, usize) {
             base.bends.clear();
             base.elbow_mid = None;
             base.elbow_vertical = None;
+            base.lock = None;
             let mut s = base.clone();
             s.route = Route::Straight;
             cands.push(s);

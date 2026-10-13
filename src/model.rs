@@ -233,6 +233,33 @@ pub struct Edge {
     pub label: String,
     #[serde(default)]
     pub label_size: f32,
+    /// Free start point (the start is not attached to a shape).
+    #[serde(default)]
+    pub from_pt: Option<P>,
+    /// Free end point (the end is not attached to a shape).
+    #[serde(default)]
+    pub to_pt: Option<P>,
+    /// Keep a straight connector exactly horizontal or vertical.
+    #[serde(default)]
+    pub lock: Option<Axis>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Axis {
+    Horizontal,
+    Vertical,
+}
+
+impl Edge {
+    /// Move the whole connector path (bends, elbow, free ends) by `d`.
+    pub fn translate(&mut self, d: P, elbow_vertical: bool) {
+        for b in &mut self.bends {
+            *b = b.add(d);
+        }
+        self.elbow_mid = self.elbow_mid.map(|m| m + if elbow_vertical { d.y } else { d.x });
+        self.from_pt = self.from_pt.map(|p| p.add(d));
+        self.to_pt = self.to_pt.map(|p| p.add(d));
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -347,6 +374,9 @@ impl Diagram {
             head_size: 12.0,
             label: String::new(),
             label_size: 13.0,
+            from_pt: None,
+            to_pt: None,
+            lock: None,
         });
         id
     }
@@ -354,8 +384,11 @@ impl Diagram {
     /// Remove nodes (and any edges attached to them) plus the given edges.
     pub fn delete(&mut self, nodes: &[u64], edges: &[u64]) {
         self.nodes.retain(|n| !nodes.contains(&n.id));
-        self.edges
-            .retain(|e| !edges.contains(&e.id) && !nodes.contains(&e.from) && !nodes.contains(&e.to));
+        self.edges.retain(|e| {
+            !edges.contains(&e.id)
+                && (e.from_pt.is_some() || !nodes.contains(&e.from))
+                && (e.to_pt.is_some() || !nodes.contains(&e.to))
+        });
     }
 
     /// All node ids that share a group with `id` (including itself).
@@ -367,7 +400,7 @@ impl Diagram {
     }
 
     pub fn bounds(&self) -> Option<(P, P)> {
-        if self.nodes.is_empty() {
+        if self.nodes.is_empty() && self.edges.is_empty() {
             return None;
         }
         let mut lo = P::new(f32::MAX, f32::MAX);
@@ -379,7 +412,7 @@ impl Diagram {
             hi.y = hi.y.max(n.pos.y + n.h);
         }
         for e in &self.edges {
-            for b in &e.bends {
+            for b in e.bends.iter().chain(e.from_pt.iter()).chain(e.to_pt.iter()) {
                 lo.x = lo.x.min(b.x);
                 lo.y = lo.y.min(b.y);
                 hi.x = hi.x.max(b.x);
