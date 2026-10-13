@@ -1,0 +1,349 @@
+{
+  "title": "Logic model",
+  "nodes": [
+    {
+      "id": 1,
+      "shape": "RoundedRect",
+      "pos": {
+        "x": 30.0,
+        "y": 125.0
+      },
+      "w": 160.0,
+      "h": 110.0,
+      "text": "Inputs\nFunds, staff, data",
+      "fill": [
+        219,
+        234,
+        254,
+        255
+      ],
+      "stroke": [
+        30,
+        64,
+        175,
+        255
+      ],
+      "stroke_width": 2.0,
+      "dash": "Solid",
+      "text_color": [
+        17,
+        24,
+        39,
+        255
+      ],
+      "font_size": 15.0,
+      "bold": false,
+      "group": null,
+      "shadow": false
+    },
+    {
+      "id": 2,
+      "shape": "RoundedRect",
+      "pos": {
+        "x": 240.0,
+        "y": 125.0
+      },
+      "w": 160.0,
+      "h": 110.0,
+      "text": "Activities\nTraining, workshops",
+      "fill": [
+        209,
+        250,
+        229,
+        255
+      ],
+      "stroke": [
+        30,
+        64,
+        175,
+        255
+      ],
+      "stroke_width": 2.0,
+      "dash": "Solid",
+      "text_color": [
+        17,
+        24,
+        39,
+        255
+      ],
+      "font_size": 15.0,
+      "bold": false,
+      "group": null,
+      "shadow": false
+    },
+    {
+      "id": 4,
+      "shape": "RoundedRect",
+      "pos": {
+        "x": 450.0,
+        "y": 125.0
+      },
+      "w": 160.0,
+      "h": 110.0,
+      "text": "Outputs\nPeople trained, maps produced",
+      "fill": [
+        254,
+        243,
+        199,
+        255
+      ],
+      "stroke": [
+        30,
+        64,
+        175,
+        255
+      ],
+      "stroke_width": 2.0,
+      "dash": "Solid",
+      "text_color": [
+        17,
+        24,
+        39,
+        255
+      ],
+      "font_size": 15.0,
+      "bold": false,
+      "group": null,
+      "shadow": false
+    },
+    {
+      "id": 6,
+      "shape": "RoundedRect",
+      "pos": {
+        "x": 660.0,
+        "y": 125.0
+      },
+      "w": 160.0,
+      "h": 110.0,
+      "text": "Outcomes\nImproved drainage practice",
+      "fill": [
+        254,
+        226,
+        226,
+        255
+      ],
+      "stroke": [
+        30,
+        64,
+        175,
+        255
+      ],
+      "stroke_width": 2.0,
+      "dash": "Solid",
+      "text_color": [
+        17,
+        24,
+        39,
+        255
+      ],
+      "font_size": 15.0,
+      "bold": false,
+      "group": null,
+      "shadow": false
+    },
+    {
+      "id": 8,
+      "shape": "RoundedRect",
+      "pos": {
+        "x": 870.0,
+        "y": 125.0
+      },
+      "w": 160.0,
+      "h": 110.0,
+      "text": "Impact\nReduced flood risk",
+      "fill": [
+        237,
+        233,
+        254,
+        255
+      ],
+      "stroke": [
+        30,
+        64,
+        175,
+        255
+      ],
+      "stroke_width": 2.0,
+      "dash": "Solid",
+      "text_color": [
+        17,
+        24,
+        39,
+        255
+      ],
+      "font_size": 15.0,
+      "bold": false,
+      "group": null,
+      "shadow": false
+    },
+    {
+      "id": 10,
+      "shape": "Note",
+      "pos": {
+        "x": 250.0,
+        "y": 280.0
+      },
+      "w": 260.0,
+      "h": 120.0,
+      "text": "Assumptions: community participation, stable funding",
+      "fill": [
+        254,
+        240,
+        138,
+        255
+      ],
+      "stroke": [
+        202,
+        138,
+        4,
+        255
+      ],
+      "stroke_width": 2.0,
+      "dash": "Solid",
+      "text_color": [
+        17,
+        24,
+        39,
+        255
+      ],
+      "font_size": 15.0,
+      "bold": false,
+      "group": null,
+      "shadow": false
+    },
+    {
+      "id": 11,
+      "shape": "Note",
+      "pos": {
+        "x": 670.0,
+        "y": 280.0
+      },
+      "w": 260.0,
+      "h": 120.0,
+      "text": "External factors: rainfall, policy changes",
+      "fill": [
+        254,
+        240,
+        138,
+        255
+      ],
+      "stroke": [
+        202,
+        138,
+        4,
+        255
+      ],
+      "stroke_width": 2.0,
+      "dash": "Solid",
+      "text_color": [
+        17,
+        24,
+        39,
+        255
+      ],
+      "font_size": 15.0,
+      "bold": false,
+      "group": null,
+      "shadow": false
+    }
+  ],
+  "edges": [
+    {
+      "id": 3,
+      "from": 1,
+      "to": 2,
+      "route": "Elbow",
+      "bends": [],
+      "elbow_mid": null,
+      "elbow_vertical": null,
+      "color": [
+        31,
+        41,
+        55,
+        255
+      ],
+      "width": 2.0,
+      "dash": "Solid",
+      "start_head": "None",
+      "end_head": "Arrow",
+      "head_size": 12.0,
+      "label": "",
+      "label_size": 13.0
+    },
+    {
+      "id": 5,
+      "from": 2,
+      "to": 4,
+      "route": "Elbow",
+      "bends": [],
+      "elbow_mid": null,
+      "elbow_vertical": null,
+      "color": [
+        31,
+        41,
+        55,
+        255
+      ],
+      "width": 2.0,
+      "dash": "Solid",
+      "start_head": "None",
+      "end_head": "Arrow",
+      "head_size": 12.0,
+      "label": "",
+      "label_size": 13.0
+    },
+    {
+      "id": 7,
+      "from": 4,
+      "to": 6,
+      "route": "Elbow",
+      "bends": [],
+      "elbow_mid": null,
+      "elbow_vertical": null,
+      "color": [
+        31,
+        41,
+        55,
+        255
+      ],
+      "width": 2.0,
+      "dash": "Solid",
+      "start_head": "None",
+      "end_head": "Arrow",
+      "head_size": 12.0,
+      "label": "",
+      "label_size": 13.0
+    },
+    {
+      "id": 9,
+      "from": 6,
+      "to": 8,
+      "route": "Elbow",
+      "bends": [],
+      "elbow_mid": null,
+      "elbow_vertical": null,
+      "color": [
+        31,
+        41,
+        55,
+        255
+      ],
+      "width": 2.0,
+      "dash": "Solid",
+      "start_head": "None",
+      "end_head": "Arrow",
+      "head_size": 12.0,
+      "label": "",
+      "label_size": 13.0
+    }
+  ],
+  "next_id": 12,
+  "hop_style": "Arc",
+  "hop_size": 8.0,
+  "background": [
+    255,
+    255,
+    255,
+    255
+  ]
+}

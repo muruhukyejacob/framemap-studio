@@ -1,0 +1,56 @@
+name: Build installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          New-Item -ItemType Directory -Force dist | Out-Null
+          & "C:\Program Files (x86)\NSIS\makensis.exe" packaging\windows\installer.nsi
+          Copy-Item target\release\framemap.exe "dist\FrameMap Studio.exe"
+          Compress-Archive -Path "dist\FrameMap Studio.exe", LICENSE -DestinationPath dist\FrameMap-Studio-1.0.0-windows-portable.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrameMap-Studio-Windows
+          path: |
+            dist/FrameMap-Studio-Setup-1.0.0.exe
+            dist/FrameMap-Studio-1.0.0-windows-portable.zip
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - run: bash packaging/macos/bundle.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrameMap-Studio-macOS
+          path: dist/FrameMap-Studio-1.0.0.dmg
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*

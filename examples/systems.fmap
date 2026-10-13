@@ -1,0 +1,450 @@
+{
+  "title": "Systems map: waste, drainage and flooding",
+  "nodes": [
+    {
+      "id": 1,
+      "shape": "Ellipse",
+      "pos": {
+        "x": 40.0,
+        "y": 65.0
+      },
+      "w": 160.0,
+      "h": 70.0,
+      "text": "Waste dumped in channels",
+      "fill": [
+        237,
+        233,
+        254,
+        255
+      ],
+      "stroke": [
+        91,
+        33,
+        182,
+        255
+      ],
+      "stroke_width": 2.0,
+      "dash": "Solid",
+      "text_color": [
+        17,
+        24,
+        39,
+        255
+      ],
+      "font_size": 15.0,
+      "bold": false,
+      "group": null,
+      "shadow": false
+    },
+    {
+      "id": 2,
+      "shape": "Ellipse",
+      "pos": {
+        "x": 390.0,
+        "y": 65.0
+      },
+      "w": 160.0,
+      "h": 70.0,
+      "text": "Blocked drainage",
+      "fill": [
+        237,
+        233,
+        254,
+        255
+      ],
+      "stroke": [
+        91,
+        33,
+        182,
+        255
+      ],
+      "stroke_width": 2.0,
+      "dash": "Solid",
+      "text_color": [
+        17,
+        24,
+        39,
+        255
+      ],
+      "font_size": 15.0,
+      "bold": false,
+      "group": null,
+      "shadow": false
+    },
+    {
+      "id": 3,
+      "shape": "Ellipse",
+      "pos": {
+        "x": 540.0,
+        "y": 285.0
+      },
+      "w": 160.0,
+      "h": 70.0,
+      "text": "Flooding",
+      "fill": [
+        237,
+        233,
+        254,
+        255
+      ],
+      "stroke": [
+        91,
+        33,
+        182,
+        255
+      ],
+      "stroke_width": 2.0,
+      "dash": "Solid",
+      "text_color": [
+        17,
+        24,
+        39,
+        255
+      ],
+      "font_size": 15.0,
+      "bold": false,
+      "group": null,
+      "shadow": false
+    },
+    {
+      "id": 4,
+      "shape": "Ellipse",
+      "pos": {
+        "x": 320.0,
+        "y": 465.0
+      },
+      "w": 160.0,
+      "h": 70.0,
+      "text": "Waterborne disease",
+      "fill": [
+        237,
+        233,
+        254,
+        255
+      ],
+      "stroke": [
+        91,
+        33,
+        182,
+        255
+      ],
+      "stroke_width": 2.0,
+      "dash": "Solid",
+      "text_color": [
+        17,
+        24,
+        39,
+        255
+      ],
+      "font_size": 15.0,
+      "bold": false,
+      "group": null,
+      "shadow": false
+    },
+    {
+      "id": 5,
+      "shape": "Ellipse",
+      "pos": {
+        "x": 20.0,
+        "y": 435.0
+      },
+      "w": 160.0,
+      "h": 70.0,
+      "text": "Household income",
+      "fill": [
+        237,
+        233,
+        254,
+        255
+      ],
+      "stroke": [
+        91,
+        33,
+        182,
+        255
+      ],
+      "stroke_width": 2.0,
+      "dash": "Solid",
+      "text_color": [
+        17,
+        24,
+        39,
+        255
+      ],
+      "font_size": 15.0,
+      "bold": false,
+      "group": null,
+      "shadow": false
+    },
+    {
+      "id": 6,
+      "shape": "Ellipse",
+      "pos": {
+        "x": 220.0,
+        "y": 255.0
+      },
+      "w": 160.0,
+      "h": 70.0,
+      "text": "Community clean-ups",
+      "fill": [
+        237,
+        233,
+        254,
+        255
+      ],
+      "stroke": [
+        91,
+        33,
+        182,
+        255
+      ],
+      "stroke_width": 2.0,
+      "dash": "Solid",
+      "text_color": [
+        17,
+        24,
+        39,
+        255
+      ],
+      "font_size": 15.0,
+      "bold": false,
+      "group": null,
+      "shadow": false
+    },
+    {
+      "id": 14,
+      "shape": "Circle",
+      "pos": {
+        "x": 325.0,
+        "y": 345.0
+      },
+      "w": 50.0,
+      "h": 50.0,
+      "text": "R1",
+      "fill": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "stroke": [
+        30,
+        64,
+        175,
+        255
+      ],
+      "stroke_width": 2.0,
+      "dash": "Solid",
+      "text_color": [
+        17,
+        24,
+        39,
+        255
+      ],
+      "font_size": 15.0,
+      "bold": true,
+      "group": null,
+      "shadow": false
+    }
+  ],
+  "edges": [
+    {
+      "id": 7,
+      "from": 1,
+      "to": 2,
+      "route": "Curved",
+      "bends": [
+        {
+          "x": 281.3101,
+          "y": 67.78842
+        }
+      ],
+      "elbow_mid": null,
+      "elbow_vertical": null,
+      "color": [
+        29,
+        78,
+        216,
+        255
+      ],
+      "width": 2.0,
+      "dash": "Solid",
+      "start_head": "None",
+      "end_head": "Arrow",
+      "head_size": 12.0,
+      "label": "+",
+      "label_size": 16.0
+    },
+    {
+      "id": 8,
+      "from": 2,
+      "to": 3,
+      "route": "Curved",
+      "bends": [
+        {
+          "x": 575.7263,
+          "y": 193.24017
+        }
+      ],
+      "elbow_mid": null,
+      "elbow_vertical": null,
+      "color": [
+        29,
+        78,
+        216,
+        255
+      ],
+      "width": 2.0,
+      "dash": "Solid",
+      "start_head": "None",
+      "end_head": "Arrow",
+      "head_size": 12.0,
+      "label": "+",
+      "label_size": 16.0
+    },
+    {
+      "id": 9,
+      "from": 3,
+      "to": 4,
+      "route": "Curved",
+      "bends": [
+        {
+          "x": 536.7185,
+          "y": 432.60797
+        }
+      ],
+      "elbow_mid": null,
+      "elbow_vertical": null,
+      "color": [
+        29,
+        78,
+        216,
+        255
+      ],
+      "width": 2.0,
+      "dash": "Solid",
+      "start_head": "None",
+      "end_head": "Arrow",
+      "head_size": 12.0,
+      "label": "+",
+      "label_size": 16.0
+    },
+    {
+      "id": 10,
+      "from": 4,
+      "to": 5,
+      "route": "Curved",
+      "bends": [
+        {
+          "x": 229.8769,
+          "y": 513.6367
+        }
+      ],
+      "elbow_mid": null,
+      "elbow_vertical": null,
+      "color": [
+        185,
+        28,
+        28,
+        255
+      ],
+      "width": 2.0,
+      "dash": "Solid",
+      "start_head": "None",
+      "end_head": "Arrow",
+      "head_size": 12.0,
+      "label": "−",
+      "label_size": 16.0
+    },
+    {
+      "id": 11,
+      "from": 5,
+      "to": 1,
+      "route": "Curved",
+      "bends": [
+        {
+          "x": 75.053894,
+          "y": 283.05856
+        }
+      ],
+      "elbow_mid": null,
+      "elbow_vertical": null,
+      "color": [
+        185,
+        28,
+        28,
+        255
+      ],
+      "width": 2.0,
+      "dash": "Solid",
+      "start_head": "None",
+      "end_head": "Arrow",
+      "head_size": 12.0,
+      "label": "−",
+      "label_size": 16.0
+    },
+    {
+      "id": 12,
+      "from": 6,
+      "to": 1,
+      "route": "Curved",
+      "bends": [
+        {
+          "x": 180.22208,
+          "y": 176.60774
+        }
+      ],
+      "elbow_mid": null,
+      "elbow_vertical": null,
+      "color": [
+        185,
+        28,
+        28,
+        255
+      ],
+      "width": 2.0,
+      "dash": "Solid",
+      "start_head": "None",
+      "end_head": "Arrow",
+      "head_size": 12.0,
+      "label": "−",
+      "label_size": 16.0
+    },
+    {
+      "id": 13,
+      "from": 3,
+      "to": 6,
+      "route": "Curved",
+      "bends": [
+        {
+          "x": 494.93182,
+          "y": 307.18323
+        }
+      ],
+      "elbow_mid": null,
+      "elbow_vertical": null,
+      "color": [
+        29,
+        78,
+        216,
+        255
+      ],
+      "width": 2.0,
+      "dash": "Solid",
+      "start_head": "None",
+      "end_head": "Arrow",
+      "head_size": 12.0,
+      "label": "+",
+      "label_size": 16.0
+    }
+  ],
+  "next_id": 15,
+  "hop_style": "Arc",
+  "hop_size": 8.0,
+  "background": [
+    255,
+    255,
+    255,
+    255
+  ]
+}
