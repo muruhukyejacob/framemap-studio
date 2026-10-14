@@ -1,12 +1,12 @@
 ; FrameMap Studio — Windows installer (NSIS 3)
 ; Build from the repository root after `cargo build --release`:
-;   makensis /DVERSION=1.1.0 packaging\windows\installer.nsi
+;   makensis /DVERSION=1.1.1 packaging\windows\installer.nsi
 
 Unicode true
 !define APPNAME   "FrameMap Studio"
 !define APPID     "FrameMapStudio"
 !ifndef VERSION
-  !define VERSION "1.1.0"
+  !define VERSION "1.1.1"
 !endif
 !define PUBLISHER "Muruhukye Jacob"
 !define EXE       "framemap.exe"

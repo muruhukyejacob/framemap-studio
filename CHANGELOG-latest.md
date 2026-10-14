@@ -1,6 +1,8 @@
-**FrameMap Studio 1.1.0** — by Muruhukye Jacob, Biostatistician/Programmer and Researcher
+**FrameMap Studio 1.1.1** — by Muruhukye Jacob, Biostatistician/Programmer and Researcher
 
 What's new
+- 1.1.1: "Make horizontal / vertical" no longer drops a shape on top of another or runs the line through one. It finds a clear spot, or uses right-angled segments if there isn't one.
+- 1.1.1: Ctrl/Shift + arrow keys now always move lines and shapes by the full 50 / 10 px.
 - Remove bends easily: click a bend dot and press Delete, right-click it, or use "Remove all bends" (Shift+B).
 - Move lines anywhere: drag a line, use the arrow keys (Shift ×10, Ctrl ×50) or the arrow buttons in the panel.
 - Line ends can be detached and placed anywhere, and the new Free arrow tool (A) draws arrows that aren't attached to shapes.

@@ -693,6 +693,30 @@ impl App {
         }
     }
 
+    /// Would moving `ids` by `d` put any of them on top of another shape?
+    fn would_overlap(&self, ids: &[u64], d: P) -> bool {
+        let m = 12.0;
+        self.doc.nodes.iter().filter(|n| ids.contains(&n.id)).any(|n| {
+            let (x0, y0, x1, y1) = (n.pos.x + d.x - m, n.pos.y + d.y - m, n.pos.x + d.x + n.w + m, n.pos.y + d.y + n.h + m);
+            self.doc
+                .nodes
+                .iter()
+                .filter(|o| !ids.contains(&o.id))
+                .any(|o| x0 < o.pos.x + o.w && x1 > o.pos.x && y0 < o.pos.y + o.h && y1 > o.pos.y)
+        })
+    }
+
+    /// Does the straight segment p–q avoid every shape not in `skip`?
+    fn path_clear(&self, p: P, q: P, skip: &[u64]) -> bool {
+        let n = ((p.dist(q) / 4.0) as usize).max(2);
+        !self.doc.nodes.iter().filter(|o| !skip.contains(&o.id)).any(|o| {
+            (0..=n).any(|k| {
+                let r = p.lerp(q, k as f32 / n as f32);
+                r.x > o.pos.x - 4.0 && r.x < o.pos.x + o.w + 4.0 && r.y > o.pos.y - 4.0 && r.y < o.pos.y + o.h + 4.0
+            })
+        })
+    }
+
     /// Make one connector exactly horizontal (or vertical). Returns a note for the status bar.
     fn axis_edge(&mut self, id: u64, vertical: bool) -> Option<String> {
         let e = self.edge(id)?.clone();
@@ -728,21 +752,53 @@ impl App {
             (None, None) => {
                 let (a, b) = (self.doc.node(e.from)?.clone(), self.doc.node(e.to)?.clone());
                 if geom::locked_ends(geom::End::Node(&a), geom::End::Node(&b), vertical).is_none() {
-                    // the shapes don't line up: move the end shape (with its group) into line
-                    let members = self.doc.group_members(b.id);
-                    if members.contains(&a.id) {
+                    // The shapes don't line up: move one of them (with its group) into line,
+                    // choosing a spot where it doesn't land on top of another shape.
+                    let mem_b = self.doc.group_members(b.id);
+                    let mem_a = self.doc.group_members(a.id);
+                    if mem_b.contains(&a.id) {
                         return Some("The two shapes are in the same group, so they can't be lined up. Ungroup them first.".into());
                     }
                     let delta = across(a.center()) - across(b.center());
-                    let d = if vertical { P::new(delta, 0.0) } else { P::new(0.0, delta) };
+                    let off = |v: f32| if vertical { P::new(v, 0.0) } else { P::new(0.0, v) };
+                    let slide = |v: f32| if vertical { P::new(0.0, v) } else { P::new(v, 0.0) };
+                    // direction pointing from a towards b along the line
+                    let away = {
+                        let along = if vertical { b.center().y - a.center().y } else { b.center().x - a.center().x };
+                        if along < 0.0 { -1.0 } else { 1.0 }
+                    };
+                    let mut plan: Option<(Vec<u64>, P, &Node)> = None;
+                    'search: for k in 0..30 {
+                        let extra = slide(away * 20.0 * k as f32);
+                        for (members, d, who) in [(&mem_b, off(delta).add(extra), &b), (&mem_a, off(-delta).sub(extra), &a)] {
+                            let (pa, pb) = if who.id == b.id { (a.center(), b.center().add(d)) } else { (a.center().add(d), b.center()) };
+                            let skip: Vec<u64> = mem_a.iter().chain(mem_b.iter()).copied().collect();
+                            if !self.would_overlap(members, d) && self.path_clear(pa, pb, &skip) {
+                                plan = Some((members.clone(), d, who));
+                                break 'search;
+                            }
+                        }
+                    }
+                    let Some((members, d, who)) = plan else {
+                        // nowhere clear to put either shape: use right-angled segments instead
+                        if let Some(t) = self.doc.edge_mut(id) {
+                            t.lock = None;
+                            t.route = Route::Elbow;
+                            t.elbow_vertical = Some(vertical);
+                        }
+                        return Some(format!(
+                            "No clear spot to line the shapes up, so the line now uses {} right-angled segments.",
+                            if vertical { "vertical" } else { "horizontal" }
+                        ));
+                    };
                     self.move_nodes_by(&members, d);
-                    let name = b.text.lines().next().unwrap_or("").trim().to_string();
-                    return Some(format!(
-                        "Moved {} {:.0} px so the line can be {}.",
-                        if name.is_empty() { "the end shape".to_string() } else { format!("\"{name}\"") },
-                        delta.abs(),
+                    let name = who.text.lines().next().unwrap_or("").trim().to_string();
+                    let msg = format!(
+                        "Moved {} so the line can be {}.",
+                        if name.is_empty() { "a shape".to_string() } else { format!("\"{name}\"") },
                         if vertical { "vertical" } else { "horizontal" }
-                    ));
+                    );
+                    return Some(msg);
                 }
             }
         }
@@ -2076,20 +2132,21 @@ impl App {
         if k(Modifiers::COMMAND, Key::Minus) {
             self.zoom_by(1.0 / 1.2);
         }
-        let step = ctx.input(|i| if i.modifiers.command { 50.0 } else if i.modifiers.shift { 10.0 } else { 1.0 });
+        // use the modifiers recorded with each key press (not the current state), so a
+        // quick Ctrl/Shift+arrow tap always moves by the right amount
         let mut nudge = P::new(0.0, 0.0);
         ctx.input(|i| {
-            if i.key_pressed(Key::ArrowLeft) {
-                nudge.x -= step;
-            }
-            if i.key_pressed(Key::ArrowRight) {
-                nudge.x += step;
-            }
-            if i.key_pressed(Key::ArrowUp) {
-                nudge.y -= step;
-            }
-            if i.key_pressed(Key::ArrowDown) {
-                nudge.y += step;
+            for ev in &i.events {
+                if let egui::Event::Key { key, pressed: true, modifiers, .. } = ev {
+                    let step = if modifiers.command { 50.0 } else if modifiers.shift { 10.0 } else { 1.0 };
+                    match key {
+                        Key::ArrowLeft => nudge.x -= step,
+                        Key::ArrowRight => nudge.x += step,
+                        Key::ArrowUp => nudge.y -= step,
+                        Key::ArrowDown => nudge.y += step,
+                        _ => {}
+                    }
+                }
             }
         });
         if nudge.len() > 0.0 {
